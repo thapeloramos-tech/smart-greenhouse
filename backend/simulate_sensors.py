@@ -57,6 +57,9 @@ def run_rule_engine(zone, moisture):
 
     if moisture < threshold:
         print(f"⚠ Zone {zone['name']} LOW moisture ({moisture:.2f} < {threshold})")
+        if not alert_exists_recent(zone["id"], "low_moisture", minutes=60):
+            create_alert(zone["id"], "low_moisture", "warning",f"{zone['name']} moisture low: {moisture:.2f}")
+
         if can_irrigate(zone["id"]):
             print(f"💧 Irrigating for {max_minutes} minutes...")
             log_irrigation(zone["id"], max_minutes, mode)
@@ -114,12 +117,44 @@ def mark_request_done(request_id):
 
 def process_manual_requests():
     requests = fetch_pending_requests()
+
     for req in requests:
         zone_id = req["zone_id"]
         minutes = float(req["minutes"])
+
         print(f"🟦 Manual request: zone={zone_id} minutes={minutes}")
-        log_irrigation(zone_id, minutes, "manual")
-        mark_request_done(req["id"])
+
+        if can_irrigate(zone_id):
+            log_irrigation(zone_id, minutes, "manual")
+            mark_request_done(req["id"])
+        else:
+            print("⏳ Cooldown active. Manual request skipped.")
+
+def create_alert(zone_id, alert_type, severity, message):
+    data = {
+        "zone_id": zone_id,
+        "alert_type": alert_type,
+        "severity": severity,
+        "message": message,
+        "status": "open"
+    }
+    supabase.table("alerts").insert(data).execute()
+
+def alert_exists_recent(zone_id, alert_type, minutes=60):
+    resp = supabase.table("alerts") \
+        .select("created_at") \
+        .eq("zone_id", zone_id) \
+        .eq("alert_type", alert_type) \
+        .eq("status", "open") \
+        .order("created_at", desc=True) \
+        .limit(1) \
+        .execute()
+
+    if not resp.data:
+        return False
+
+    last_time = datetime.fromisoformat(resp.data[0]["created_at"].replace("Z", "+00:00"))
+    return (datetime.now(timezone.utc) - last_time) < timedelta(minutes=minutes)
 
 while True:
     zones = get_zones()
